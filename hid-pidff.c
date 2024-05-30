@@ -65,6 +65,10 @@ static const u8 pidff_set_effect[] = {
 	0x22, 0x50, 0x52, 0x53, 0x54, 0x56, 0xa7
 };
 
+static const u8 pidff_set_effect_without_delay[] = {
+	0x22, 0x50, 0x52, 0x53, 0x54, 0x56
+};
+
 #define PID_ATTACK_LEVEL	1
 #define PID_ATTACK_TIME		2
 #define PID_FADE_LEVEL		3
@@ -303,10 +307,6 @@ static void pidff_set_effect_report(struct pidff_device *pidff,
 {
 	/* check for device quirks */
 	unsigned short direction = effect->direction;
-	unsigned short length = effect->replay.length;
-
-	if (pidff->quirks & PIDFF_QUIRK_FIX_0_INFINITE_LENGTH && length == 0)
-		length = 0xffff;
 
 	if ((effect->type == FF_DAMPER ||
 	    effect->type == FF_FRICTION ||
@@ -319,7 +319,8 @@ static void pidff_set_effect_report(struct pidff_device *pidff,
 		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0];
 	pidff->set_effect_type->value[0] =
 		pidff->create_new_effect_type->value[0];
-	pidff->set_effect[PID_DURATION].value[0] = length;
+	pidff->set_effect[PID_DURATION].value[0] = 
+		effect->replay.length == 0 ? 0xffff : effect->replay.length;
 	pidff->set_effect[PID_TRIGGER_BUTTON].value[0] =
 		effect->trigger.button;
 	pidff->set_effect[PID_TRIGGER_REPEAT_INT].value[0] =
@@ -1087,10 +1088,23 @@ static int pidff_init_fields(struct pidff_device *pidff, struct input_dev *dev)
 {
 	int envelope_ok = 0;
 
-	if (PIDFF_FIND_FIELDS(set_effect, PID_SET_EFFECT, 1)) {
-		hid_err(pidff->hid, "unknown set_effect report layout\n");
-		return -ENODEV;
+	if (pidff->quirks & PIDFF_QUIRK_NO_DELAY_EFFECT) {
+		hid_dbg(pidff->hid, "Find fields for set_effect without delay\n");
+		if (pidff_find_fields(pidff->set_effect, 
+					pidff_set_effect_without_delay,
+					pidff->reports[PID_SET_EFFECT], \
+					sizeof(pidff_set_effect_without_delay), 1)) {
+			hid_err(pidff->hid, "unknown set_effect report layout\n");
+			return -ENODEV;
+		}
 	}
+	else {
+		if (PIDFF_FIND_FIELDS(set_effect, PID_SET_EFFECT, 1)) {
+			hid_err(pidff->hid, "unknown set_effect report layout\n");
+			return -ENODEV;
+		}
+	}
+	
 
 	PIDFF_FIND_FIELDS(block_load, PID_BLOCK_LOAD, 0);
 	if (!pidff->block_load[PID_EFFECT_BLOCK_INDEX].value) {
@@ -1250,7 +1264,7 @@ static int pidff_check_autocenter(struct pidff_device *pidff,
 /*
  * Check if the device is PID and initialize it
  */
-int hid_pidff_init(struct hid_device *hid)
+int hid_new_pidff_init(struct hid_device *hid, const struct hid_device_id *id)
 {
 	struct pidff_device *pidff;
 	struct hid_input *hidinput = list_entry(hid->inputs.next,
@@ -1272,7 +1286,7 @@ int hid_pidff_init(struct hid_device *hid)
 		return -ENOMEM;
 
 	pidff->hid = hid;
-	pidff->quirks = 0;
+	pidff->quirks |= id->driver_data;
 
 	hid_device_io_start(hid);
 
@@ -1349,30 +1363,4 @@ int hid_pidff_init(struct hid_device *hid)
 
 	kfree(pidff);
 	return error;
-}
-
-/*
- * Check if the device is PID and initialize it
- * Add quirks after initialisation
- */
-int hid_pidff_init_with_quirks(struct hid_device *hid, unsigned quirks)
-{
-	int error = hid_pidff_init(hid);
-
-	if (error)
-		return error;
-
-	struct hid_input *hidinput = list_entry(hid->inputs.next,
-						struct hid_input, list);
-	struct input_dev *dev = hidinput->input;
-	struct pidff_device *pidff = dev->ff->private;
-
-	/* set quirks on the pidff device */
-	hid_device_io_start(hid);
-	pidff->quirks |= quirks;
-	hid_device_io_stop(hid);
-
-	hid_dbg(dev, "Device quirks: %d\n", pidff->quirks);
-
- 	return 0;
 }
